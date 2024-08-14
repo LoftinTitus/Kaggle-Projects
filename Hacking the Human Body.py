@@ -5,7 +5,6 @@ import torch
 import torch.nn as nn
 from torch.autograd import Variable
 from torch.utils.data import DataLoader
-from sklearn.model_selection import train_test_split
 import torch.optim as optim
 import torch.nn.functional as F
 import torchvision.transforms as transforms
@@ -19,6 +18,7 @@ for dirname, _, filenames in os.walk('/kaggle/input'):
         if filename.endswith('.csv'):
             print(os.path.join(dirname, filename))
 train = pd.read_csv('/kaggle/input/hubmap-organ-segmentation/train.csv')
+test = pd.read_csv('/kaggle/input/hubmap-organ-segmentation/test.csv')
 
 sample_image = cv2.imread('/kaggle/input/hubmap-organ-segmentation/train_images/10703.tiff')
 plt.imshow(cv2.cvtColor(sample_image, cv2.COLOR_BGR2RGB))
@@ -42,8 +42,6 @@ class FDataset(Dataset):
             raise FileNotFoundError(f"Image not found: {img_path}")
 
         img = cv2.imread(img_path)
-        if img is None:
-            raise ValueError(f"Image cannot be read: {img_path}")
         
         rle = self.dataframe.iloc[idx]["rle"]
         height = self.dataframe.iloc[idx]["img_height"]
@@ -58,6 +56,7 @@ class FDataset(Dataset):
             mask = torch.tensor(mask, dtype=torch.float32).unsqueeze(0)  # (1, H, W)
         
         return img, mask
+
 def rle_to_mask(rle, height, width):
     mask = np.zeros(height * width, dtype=np.uint8)
     rle = list(map(int, rle.split()))
@@ -70,11 +69,12 @@ def rle_to_mask(rle, height, width):
 transform = transforms.Compose([
     transforms.ToPILImage(),
     transforms.Resize((512, 512)),
-    transforms.ToTensor(),
-])
+    transforms.ToTensor(),])
 
 train_dataset = FDataset(dataframe=train, transform=transform, target_size=(512, 512))
+test_dataset = FDataset(dataframe=test, transform=transform, target_size=(512,512))
 train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True, num_workers=2)
+test_loader = DataLoader(test_dataset, batch_size=8, shuffle=False, num_workers=2)
 
 class CNNModel(nn.Module):
     def __init__(self):
@@ -82,6 +82,9 @@ class CNNModel(nn.Module):
         self.cnn1 = nn.Conv2d(3, 64, kernel_size=3, padding=1)
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
         self.cnn2 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
+        self.cnn3 = nn.Conv2d(128, 256, kernel_size=3, padding=1)
+        self.cnn4 = nn.Conv2d(256, 128, kernel_size=3, padding=1)
+        self.cnn5 = nn.Conv2d(128, 3, kernel_size=1)
         
         self._to_linear = None
         self.convs = nn.Sequential(
@@ -90,7 +93,14 @@ class CNNModel(nn.Module):
             self.pool,
             self.cnn2,
             nn.ReLU(),
-            self.pool
+            self.pool,
+            self.cnn3,
+            nn.ReLU(),
+            self.pool,
+            self.cnn4,
+            nn.ReLU(),
+            self.pool,
+            self.cnn5, 
         )
         self._get_output_size((3, 512, 512))
 
@@ -105,23 +115,19 @@ class CNNModel(nn.Module):
             self._to_linear = int(torch.prod(torch.tensor(x.shape[1:])))
     
     def forward(self, x):
-        x = self.convs(x)
-        if x.size(2) != 512 or x.size(3) != 512:
-            x = F.interpolate(x, size=(512, 512), mode='bilinear', align_corners=False)
-        x = x.view(x.size(0), -1)
-        x = self.fc1(x)
-        x = F.relu(x)
-        x = self.fc2(x)
+        x = self.convs(x) 
+        x = F.interpolate(x, size=(512, 512), mode='bilinear', align_corners=False)
+        x = F.softmax(x, dim=1)
         return x
-model = SimpleCNN()
 
+model = CNNModel()
 
 batch_size = 8
 n_iters = 2500
 num_epochs = n_iters // (len(train_loader.dataset) // batch_size)
 num_epochs = int(num_epochs)
 criterion = nn.CrossEntropyLoss()
-learning_rate = 0.1
+learning_rate = 0.001
 optimizer = optim.SGD(model.parameters(), lr=learning_rate)
 
 count = 0
@@ -133,12 +139,8 @@ for epoch in range(num_epochs):
     model.train()
 
     for images, masks in train_loader:
-        masks = masks.repeat(1, 3, 1, 1)
 
         outputs = model(images)
-
-        if outputs.shape[2:] != masks.shape[2:]:
-            outputs = F.interpolate(outputs, size=(masks.size(2), masks.size(3)), mode='bilinear', align_corners=False)
 
         masks = masks.squeeze(1)
         masks = masks.long()
@@ -172,3 +174,15 @@ for epoch in range(num_epochs):
             
             if count % 500 == 0:
                 print('Iteration: {}  Loss: {:.4f}  Accuracy: {:.2f} %'.format(count, loss.item(), accuracy))
+
+plt.plot(iteration_list,loss_list)
+plt.xlabel("Number of iteration")
+plt.ylabel("Loss")
+plt.title("CNN: Loss vs Number of iteration")
+plt.show()
+
+plt.plot(iteration_list,accuracy_list,color = "blue")
+plt.xlabel("Number of iteration")
+plt.ylabel("Accuracy")
+plt.title("CNN: Accuracy vs Number of iteration")
+plt.show()
