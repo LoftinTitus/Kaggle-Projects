@@ -186,3 +186,22 @@ plt.xlabel("Number of iteration")
 plt.ylabel("Accuracy")
 plt.title("CNN: Accuracy vs Number of iteration")
 plt.show()
+
+def mask_to_rle(mask):
+    pixels = mask.flatten()
+    rle = []
+    prev = 0
+    for i, pixel in enumerate(pixels):
+        if pixel != prev:
+            rle.append(i + 1)
+            prev = pixel
+    rle_str = " ".join(map(str, rle))
+    return rle_str
+
+submission = []
+for img_id, predicted_mask in test_predictions:
+    rle = mask_to_rle(predicted_mask)
+    submission.append({'id': img_id, 'rle': rle})
+
+submission_df = pd.DataFrame(submission)
+submission_df.to_csv('submission.csv', index=False)
